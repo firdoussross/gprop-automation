@@ -65,11 +65,19 @@ async function post(env, path, body, { token, userId } = {}) {
 // ---- auth ----
 // Logs in and returns { token, userId, raw }. Cached by the caller in KV.
 export async function login(env) {
-  const idField = env.GPROP_LOGIN_FIELD === "contact" ? "contact" : "email";
+  // Backend returns an empty 200 for anything it can't parse, so send a superset
+  // of the plausible login keys seen in the app (email + userName + device/lang).
+  // PHP ignores extras; this avoids one-field-at-a-time guessing.
+  const id = env.GPROP_LOGIN_ID;
   const body = {
-    [idField]: env.GPROP_LOGIN_ID,
+    email: id,
+    userName: id,
+    username: id,
     [FIELDS.login.password]: env.GPROP_PASSWORD,
     [FIELDS.login.platform]: env.GPROP_PLATFORM || "android",
+    [FIELDS.login.deviceId]: "gprop-bot-worker",
+    [FIELDS.login.fcmToken]: "",
+    lang: "en",
   };
   const r = await post(env, "/login/getLoginDetails_API", body);
   // Token/userId location is confirmed on first real login; try common shapes.
