@@ -112,3 +112,39 @@ The cleanest format is **HTTP Toolkit "Copy as cURL"** for each request, or a
 - We'll build the bot to make **one** backend call per pass, no retries-in-a-loop,
   no scraping. The aim is to behave like a single polite user.
 - If GProp later changes their API, we re-capture — nothing here fights the app.
+
+---
+
+## Option C — Flutter apps (GProp is Flutter)
+
+GProp ships `libflutter.so` + `libapp.so`, so it's a **Flutter** app. Flutter
+ignores the Android system proxy and pins certs inside its own engine
+(BoringSSL), which is why apk-mitm and a normal proxy see no traffic and the
+login just hangs. Use **reFlutter**, which patches `libflutter.so` to disable
+pinning and route traffic to a proxy you choose.
+
+Because GProp is a split APK, merge the splits into one universal APK first.
+
+1. **Merge splits** (APKEditor):
+   ```
+   java -jar APKEditor.jar m -i gprop-apk -o gprop-merged.apk
+   ```
+2. **Find your PC's LAN IP** (same Wi-Fi as phone): `ipconfig getifaddr en0`
+   (mac) or `ip addr` (linux).
+3. **Patch with reFlutter:**
+   ```
+   pip install reflutter
+   reflutter gprop-merged.apk
+   ```
+   Choose option **1** (traffic monitoring), enter your LAN IP, default port
+   `8083`. Outputs `release.RE.apk`.
+4. **Sign** (uber-apk-signer): `java -jar uber-apk-signer.jar -a release.RE.apk`
+5. **Install:**
+   ```
+   adb uninstall com.gprop.users
+   adb install release.RE-aligned-debugSigned.apk
+   ```
+6. **Listen** on the IP:port you gave — run mitmproxy there:
+   `mitmweb --listen-port 8083` (or Burp on 8083). The patched app sends its
+   decrypted API traffic through it. Open GProp, log in, create a test pass, view
+   the QR — the requests appear in mitmproxy.
