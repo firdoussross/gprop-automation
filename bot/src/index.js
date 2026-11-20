@@ -14,7 +14,7 @@ import { tg, keyboard } from "./telegram.js";
 import * as gprop from "./gprop.js";
 import { renderPassPNG } from "./pass.js";
 
-const STEP = { NAME: "name", VEHICLE: "vehicle", DATE: "date" };
+const STEP = { NAME: "name", VEHICLE: "vehicle", CUSTOMEND: "customend" };
 const STATE_TTL = 1800; // conversation state lives 30 min
 const TZ_OFFSET_MIN = 8 * 60; // Malaysia UTC+8 for "today"
 
@@ -67,10 +67,10 @@ async function onMessage(msg, env, bot) {
       "Unit is always RB-034B. /cancel to stop.");
   }
 
-  // Reply to a force_reply prompt (name / company / vehicle).
+  // Reply to a force_reply prompt (name / company / vehicle / custom end date).
   if (msg.reply_to_message && text) {
     const st = await getState(env, chat.id, msg.from.id);
-    if (st && (st.step === STEP.NAME || st.step === STEP.VEHICLE)) {
+    if (st && (st.step === STEP.NAME || st.step === STEP.VEHICLE || st.step === STEP.CUSTOMEND)) {
       return onTextStep(msg, st, env, bot);
     }
   }
@@ -107,8 +107,21 @@ async function onCallback(cq, env, bot) {
     return bot.sendMessage(chatId, prompt, { reply_markup: { force_reply: true, selective: true } });
   }
 
-  if (kind === "date") {
-    st.data.date = value;
+  if (kind === "sdate") {
+    st.data.startDate = value;
+    await setState(env, chatId, cq.from.id, st);
+    return promptEndDate(chatId, value, bot);
+  }
+
+  if (kind === "edate") {
+    if (value === "custom") {
+      st.step = STEP.CUSTOMEND;
+      await setState(env, chatId, cq.from.id, st);
+      return bot.sendMessage(chatId,
+        "📅 Reply with the <b>end date</b> as <code>YYYY-MM-DD</code> (e.g. <code>2026-12-05</code>):",
+        { reply_markup: { force_reply: true, selective: true } });
+    }
+    st.data.endDate = value;
     await setState(env, chatId, cq.from.id, st);
     return submitPass(chatId, cq.from.id, st, env, bot);
   }
@@ -129,13 +142,41 @@ async function onTextStep(msg, st, env, bot) {
 
   if (st.step === STEP.VEHICLE) {
     st.data.vehicle = val === "-" ? "" : val.toUpperCase();
-    st.step = STEP.DATE;
     await setState(env, chatId, msg.from.id, st);
     const dates = quickDates(4);
     return bot.sendMessage(chatId,
       "📅 <b>Visit date?</b> (defaults to today — tap to confirm)",
-      keyboard(dates.map((d) => [{ text: d.label, data: `date:${d.value}` }])));
+      keyboard(dates.map((d) => [{ text: d.label, data: `sdate:${d.value}` }])));
   }
+
+  if (st.step === STEP.CUSTOMEND) {
+    const end = val.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(end) || isNaN(Date.parse(end))) {
+      return bot.sendMessage(chatId, "That doesn't look like a date. Reply as <code>YYYY-MM-DD</code>, e.g. <code>2026-12-05</code>.",
+        { reply_markup: { force_reply: true, selective: true } });
+    }
+    if (end < st.data.startDate) {
+      return bot.sendMessage(chatId, `End date can't be before the start date (${escapeHtml(st.data.startDate)}). Reply with a later date.`,
+        { reply_markup: { force_reply: true, selective: true } });
+    }
+    st.data.endDate = end;
+    await setState(env, chatId, msg.from.id, st);
+    return submitPass(chatId, msg.from.id, st, env, bot);
+  }
+}
+
+// Ask for the validity end date: default same day, plus 3-day / 7-day / custom.
+function promptEndDate(chatId, startDate, bot) {
+  const d3 = addDays(startDate, 2);  // 3 calendar days inclusive
+  const d7 = addDays(startDate, 6);  // 7 calendar days inclusive
+  return bot.sendMessage(chatId,
+    "🗓️ <b>Valid until?</b> (defaults to same day)",
+    keyboard([
+      [{ text: `✅ Same day (${startDate})`, data: `edate:${startDate}` }],
+      [{ text: `3 days (→ ${d3})`, data: `edate:${d3}` }],
+      [{ text: `7 days (→ ${d7})`, data: `edate:${d7}` }],
+      [{ text: "✏️ Custom date", data: "edate:custom" }],
+    ]));
 }
 
 async function submitPass(chatId, userId, st, env, bot) {
@@ -155,9 +196,11 @@ async function submitPass(chatId, userId, st, env, bot) {
   const typeId = isDelivery ? gprop.deliveryTypeFor(d.name) : gprop.TYPE_SOCIAL_VEHICLE;
   const categoryLabel = isDelivery ? "Delivery Services" : "Social Visitor";
 
+  const startDate = d.startDate;
+  const endDate = d.endDate || d.startDate;
   const res = await gprop.createVisitor(auth, {
     categoryId, typeId, name: d.name, vehicle: d.vehicle,
-    startDate: d.date, endDate: d.date,
+    startDate, endDate,
   });
   if (!res.ok) {
     return bot.sendMessage(chatId, `❌ GProp did not accept the pass${res.msg ? ` (“${escapeHtml(res.msg)}”)` : ""}. Please try again.`);
@@ -176,17 +219,21 @@ async function submitPass(chatId, userId, st, env, bot) {
     name: d.name,
     category: categoryLabel,
     type: typeName,
-    validFrom: row?.fldStartDate || d.date,
-    validTo: row?.fldEndDate || d.date,
+    validFrom: row?.fldStartDate || startDate,
+    validTo: row?.fldEndDate || endDate,
     vehicle: d.vehicle || "-",
+    date: row?.fldStartDate || startDate,
     qr,
   };
+  const validity = passData.validFrom === passData.validTo
+    ? passData.validFrom
+    : `${passData.validFrom} → ${passData.validTo}`;
 
   const caption =
     `✅ <b>Visitor pass ready</b>\n` +
     `${isDelivery ? "Company" : "Name"}: ${escapeHtml(d.name)}\n` +
     (d.vehicle ? `Vehicle: ${escapeHtml(d.vehicle)}\n` : "") +
-    `Date: ${escapeHtml(passData.validFrom)}\n` +
+    `Valid: ${escapeHtml(validity)}\n` +
     `Unit: ${escapeHtml(passData.unit)}` +
     (qr ? `\nPass no: <code>${escapeHtml(qr)}</code>` : "");
 
@@ -215,6 +262,12 @@ function quickDates(n) {
     out.push({ label, value });
   }
   return out;
+}
+
+function addDays(yyyymmdd, days) {
+  const dt = new Date(yyyymmdd + "T00:00:00Z");
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
 }
 
 function escapeHtml(s) {

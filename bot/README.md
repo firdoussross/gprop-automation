@@ -13,15 +13,18 @@ The bot drives the GProp **website** (not the mobile API). A family member types
 2. Social → **visitor name** + **vehicle reg**. Delivery → **company**
    (Grab/Lalamove/etc.) + **vehicle reg**.
 3. Confirms the **visit date** (defaults to today).
-4. The bot logs into GProp with Ross's credentials, creates the visitor (unit is
+4. Confirms **valid until** — same day (default), 3 days, 7 days, or a custom date.
+5. The bot logs into GProp with Ross's credentials, creates the visitor (unit is
    always **RB-034B**), reads back the pass QR number, and posts a generated
    **visitor-pass PNG** to the group.
 
-The pass PNG is built entirely in the Worker (`src/pass.js`): the QR comes from
-`qrcode.js` (same library GProp uses) and is composited with an 8×8 bitmap font
-into a card, then encoded as a PNG by hand via `CompressionStream` — no wasm, no
-external services, no browser. The QR encodes the same `fldVisitorQr` number the
-GProp app embeds, so it scans identically.
+The pass PNG is built entirely in the Worker (`src/pass.js`) to mirror GProp's own
+Visitor Pass — orange header, white card, the scan instruction, QR, unit, and the
+Name / Vehicle / Date / Validity rows, with the real GProp logo. The QR comes from
+`qrcode.js` (the same library GProp uses) and text is rendered with the real
+Poppins font via `opentype.js` (anti-aliased), then encoded as a PNG by hand via
+`CompressionStream` — no wasm, no external services, no browser. The QR encodes the
+same `fldVisitorQr` number the GProp app embeds, so it scans identically.
 
 Only the configured group (`ALLOWED_CHAT_ID`) is served; everything else is
 ignored (keep Telegram group privacy mode on so the bot only sees `/commands`
@@ -31,8 +34,10 @@ and replies to its own prompts).
 
 - `src/index.js` — Telegram webhook + conversation flow.
 - `src/gprop.js` — GProp web client (login, create, listing, cancel).
-- `src/pass.js` — self-contained visitor-pass PNG renderer.
-- `src/qrcode.js`, `src/font8x8.js` — vendored QR encoder + bitmap font.
+- `src/pass.js` — self-contained visitor-pass PNG renderer (GProp look-alike).
+- `src/qrcode.js` — vendored QR encoder (same library GProp uses).
+- `src/opentype.js`, `src/fonts.js` — vendored font engine + Poppins subset.
+- `src/logo.js` — the GProp logo as embedded RGBA.
 - `src/telegram.js` — Telegram Bot API helpers (incl. PNG upload).
 
 See [`../docs/WEB_API.md`](../docs/WEB_API.md) for the reverse-engineered GProp
