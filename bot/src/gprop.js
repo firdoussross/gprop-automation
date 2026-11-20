@@ -28,8 +28,9 @@ const FIELDS = {
 };
 
 function authHeaders(env, token, userId) {
+  // The GProp backend is form-based (PHP): send x-www-form-urlencoded, not JSON.
   const h = {
-    "Content-Type": "application/json",
+    "Content-Type": "application/x-www-form-urlencoded",
     Accept: "application/json",
     Platform: env.GPROP_PLATFORM || "android",
     Version: env.GPROP_APP_VERSION || "1.0.0",
@@ -41,11 +42,19 @@ function authHeaders(env, token, userId) {
   return h;
 }
 
+function formBody(obj) {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (v !== undefined && v !== null) p.append(k, String(v));
+  }
+  return p.toString();
+}
+
 async function post(env, path, body, { token, userId } = {}) {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers: authHeaders(env, token, userId),
-    body: JSON.stringify(body || {}),
+    body: formBody(body),
   });
   const text = await res.text();
   let json = null;
