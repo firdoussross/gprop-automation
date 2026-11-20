@@ -134,7 +134,7 @@ export const WEBAPP_HTML = `<!doctype html>
     var btn = document.getElementById('go'); btn.disabled = true; btn.textContent = 'Creating…';
     fetch('/app/submit', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ initData: tg ? tg.initData : '', kind: sel, name: name, vehicle: vehicle, date: date })
+      body: JSON.stringify({ initData: tg ? tg.initData : '', dest: new URLSearchParams(location.search).get('dest') || '', kind: sel, name: name, vehicle: vehicle, date: date })
     }).then(function(r){ return r.json(); }).then(function(res){
       if (res && res.ok) {
         document.getElementById('form').style.display='none';

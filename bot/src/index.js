@@ -61,14 +61,6 @@ async function botUsername(bot) {
   return BOT_USERNAME;
 }
 
-// Is this user a member of the family group?
-async function isGroupMember(bot, env, userId) {
-  try {
-    const m = await bot.getChatMember(env.ALLOWED_CHAT_ID, userId);
-    return ["creator", "administrator", "member", "restricted"].includes(m?.result?.status);
-  } catch (e) { console.log("getChatMember error:", e?.stack || e); return false; }
-}
-
 async function handleUpdate(update, env) {
   const bot = tg(env);
   const msg = update.message;
@@ -88,43 +80,63 @@ async function handleUpdate(update, env) {
   // members, so random people who find the bot can't invoke it.
   if (isPrivate) {
     if (/^\/(start|pass|visitor)\b/.test(cmd)) {
-      if (!(await isGroupMember(bot, env, msg.from.id))) {
+      const dest = passDest(env, (cmd.split(/\s+/)[1] || "").trim());
+      if (!(await isMemberOf(bot, dest.chatId, msg.from.id))) {
         return bot.sendMessage(chat.id, "Sorry — this bot is only for the designated resident group. You don't have access.");
       }
+      const url = dest.key ? `${APP_URL}?dest=${dest.key}` : APP_URL;
       return bot.sendMessage(chat.id,
         "🎟️ <b>GProp Visitor Pass</b>\nTap below to open the form. The finished pass posts to your family group.",
-        { reply_markup: { inline_keyboard: [[{ text: "🎟️ Open pass form", web_app: { url: APP_URL } }]] } });
+        { reply_markup: { inline_keyboard: [[{ text: "🎟️ Open pass form", web_app: { url } }]] } });
     }
     return;
   }
 
   // Announcements group: /latestnotice re-posts the newest notice (for testing).
   if (env.ANNOUNCE_CHAT_ID && String(chat.id) === String(env.ANNOUNCE_CHAT_ID)) {
+    const inThread = msg.message_thread_id ? { message_thread_id: msg.message_thread_id } : {};
+    if (/^\/(pass|visitor)\b/.test(cmd)) return passButtonMessage(bot, chat.id, await botUsername(bot), "t", inThread);
+    if (/^\/help\b/.test(cmd)) return bot.sendMessage(chat.id, HELP_TEXT, inThread);
     if (/^\/latestnotice\b/.test(cmd)) {
       try { const row = await postLatest(env, bot); if (!row) await bot.sendMessage(chat.id, "No announcements found."); }
       catch (e) { console.log("latestnotice error:", e?.stack || e); }
     }
-    return; // no pass creation here
+    return;
   }
 
   // Group chat: only the designated family group is served; others are ignored.
   if (!isAllowedChat(chat, env)) return;
-  if (/^\/(pass|visitor)\b/.test(cmd)) {
-    const uname = await botUsername(bot);
-    // One-tap: open the BotFather direct-link Mini App. Membership is still
-    // enforced on submit, so only group members can actually create a pass.
-    const launch = uname ? `https://t.me/${uname}/${APP_SHORTNAME}` : APP_URL;
-    return bot.sendMessage(chat.id,
-      "🎟️ <b>GProp Visitor Pass</b>\nTap to create a pass — opens a private form; the finished pass posts back here.",
-      { reply_markup: { inline_keyboard: [[{ text: "➕ Create visitor pass", url: launch }]] } });
-  }
-  if (/^\/help\b/.test(cmd)) {
-    return bot.sendMessage(chat.id,
-      "🎟️ <b>GProp Visitor Pass</b>\nSend /pass, then tap <b>Create visitor pass</b> to open the private form.\n" +
-      "• <b>Social visitor</b> — name + vehicle\n• <b>Grab / Lalamove / Foodpanda</b> — just vehicle\n" +
-      "• <b>Other delivery</b> — company + vehicle\nUnit is always RB-034B. Passes are valid for the day. Only resident-group members can create passes.");
-  }
+  if (/^\/(pass|visitor)\b/.test(cmd)) return passButtonMessage(bot, chat.id, await botUsername(bot), "");
+  if (/^\/help\b/.test(cmd)) return bot.sendMessage(chat.id, HELP_TEXT);
 }
+
+// Where a finished pass is posted. "t" = the announcements topic group.
+function passDest(env, key) {
+  if (key === "t" && env.ANNOUNCE_CHAT_ID) {
+    return { key: "t", chatId: env.ANNOUNCE_CHAT_ID, threadId: env.ANNOUNCE_THREAD_ID ? Number(env.ANNOUNCE_THREAD_ID) : undefined };
+  }
+  return { key: "", chatId: env.ALLOWED_CHAT_ID, threadId: undefined };
+}
+
+async function isMemberOf(bot, chatId, userId) {
+  try {
+    const m = await bot.getChatMember(chatId, userId);
+    return ["creator", "administrator", "member", "restricted"].includes(m?.result?.status);
+  } catch (e) { console.log("getChatMember error:", e?.stack || e); return false; }
+}
+
+function passButtonMessage(bot, chatId, uname, destKey, extra = {}) {
+  const q = destKey ? `?startapp=${destKey}` : "";
+  const launch = uname ? `https://t.me/${uname}/${APP_SHORTNAME}${q}` : (destKey ? `${APP_URL}?dest=${destKey}` : APP_URL);
+  return bot.sendMessage(chatId,
+    "🎟️ <b>GProp Visitor Pass</b>\nTap to create a pass — opens a private form; the finished pass posts back here.",
+    { reply_markup: { inline_keyboard: [[{ text: "➕ Create visitor pass", url: launch }]] }, ...extra });
+}
+
+const HELP_TEXT =
+  "🎟️ <b>GProp Visitor Pass</b>\nSend /pass, then tap <b>Create visitor pass</b> to open the private form.\n" +
+  "• <b>Social visitor</b> — name + vehicle\n• <b>Grab / Lalamove / Foodpanda</b> — just vehicle\n" +
+  "• <b>Other delivery</b> — company + vehicle\nUnit is always RB-034B. Passes are valid for the day. Only resident-group members can create passes.";
 
 function isAllowedChat(chat, env) {
   return String(chat?.id) === String(env.ALLOWED_CHAT_ID);
@@ -140,16 +152,11 @@ async function onAppSubmit(request, env) {
   const user = await verifyInitData(body.initData || "", env.TELEGRAM_BOT_TOKEN);
   if (!user) return json({ ok: false, error: "Couldn't verify Telegram sign-in. Open the form from the group button." });
 
-  // Only family-group members may create passes.
-  try {
-    const m = await bot.getChatMember(env.ALLOWED_CHAT_ID, user.id);
-    const status = m?.result?.status;
-    if (!["creator", "administrator", "member", "restricted"].includes(status)) {
-      return json({ ok: false, error: "You need to be in the family group to create a pass." });
-    }
-  } catch (e) {
-    console.log("getChatMember error:", e?.stack || e);
-    return json({ ok: false, error: "Couldn't verify your group membership. Try again." });
+  // Destination: the signed start_param (direct-link launch) or the form's
+  // dest field. Either way the user must be a member of that group.
+  const dest = passDest(env, user._startParam || String(body.dest || ""));
+  if (!(await isMemberOf(bot, dest.chatId, user.id))) {
+    return json({ ok: false, error: "You need to be in the family group to create a pass." });
   }
 
   // Map the chosen kind to GProp category/type + the name shown on the pass.
@@ -208,9 +215,9 @@ async function onAppSubmit(request, env) {
   try {
     if (qr) {
       const png = await renderPassPNG(passData);
-      await bot.sendPhotoBytes(env.ALLOWED_CHAT_ID, png, `pass-${qr}.png`, { caption, parse_mode: "HTML" });
+      await bot.sendPhotoBytes(dest.chatId, png, `pass-${qr}.png`, { caption, parse_mode: "HTML", ...(dest.threadId ? { message_thread_id: String(dest.threadId) } : {}) });
     } else {
-      await bot.sendMessage(env.ALLOWED_CHAT_ID, caption + "\n(⚠️ created, but no QR found — check the GProp app.)");
+      await bot.sendMessage(dest.chatId, caption + "\n(⚠️ created, but no QR found — check the GProp app.)", dest.threadId ? { message_thread_id: dest.threadId } : {});
     }
   } catch (e) {
     console.log("deliver error:", e?.stack || e);
@@ -239,7 +246,7 @@ async function verifyInitData(initData, botToken) {
   // freshness (24h)
   const authDate = Number(params.get("auth_date") || 0);
   if (authDate && Date.now() / 1000 - authDate > 86400) return null;
-  try { return JSON.parse(params.get("user") || "{}"); } catch { return null; }
+  try { const u = JSON.parse(params.get("user") || "{}"); u._startParam = params.get("start_param") || ""; return u; } catch { return null; }
 }
 
 // ---------- helpers ----------
