@@ -19,6 +19,15 @@ export function tg(env) {
       call("editMessageText", { chat_id, message_id, text, parse_mode: "HTML", ...extra }),
     sendPhoto: (chat_id, photo, extra = {}) =>
       call("sendPhoto", { chat_id, photo, ...extra }),
+    // Upload a generated PNG (Uint8Array) as a photo via multipart.
+    async sendPhotoBytes(chat_id, bytes, filename, extra = {}) {
+      const fd = new FormData();
+      fd.append("chat_id", String(chat_id));
+      for (const [k, v] of Object.entries(extra)) fd.append(k, typeof v === "string" ? v : JSON.stringify(v));
+      fd.append("photo", new Blob([bytes], { type: "image/png" }), filename || "pass.png");
+      const res = await fetch(`${base}/sendPhoto`, { method: "POST", body: fd });
+      return res.json();
+    },
     call,
   };
 }

@@ -6,17 +6,37 @@ posts the QR back. Runs on Cloudflare Workers (free plan is plenty) on
 
 ## How it works
 
-1. A family member types `/pass` in the group.
-2. Bot flow: visitor **type** → **unit** (auto if you have one) → **name** →
-   **vehicle reg** → **date**.
-3. Bot logs into GProp with your credentials (cached token in KV), calls
-   `addNewVisitor_API`, fetches the pass, and posts the **QR** to the group.
+The bot drives the GProp **website** (not the mobile API). A family member types
+`/pass` in the group, then:
+
+1. Picks **Social visitor** or **Delivery**.
+2. Social → **visitor name** + **vehicle reg**. Delivery → **company**
+   (Grab/Lalamove/etc.) + **vehicle reg**.
+3. Confirms the **visit date** (defaults to today).
+4. The bot logs into GProp with Ross's credentials, creates the visitor (unit is
+   always **RB-034B**), reads back the pass QR number, and posts a generated
+   **visitor-pass PNG** to the group.
+
+The pass PNG is built entirely in the Worker (`src/pass.js`): the QR comes from
+`qrcode.js` (same library GProp uses) and is composited with an 8×8 bitmap font
+into a card, then encoded as a PNG by hand via `CompressionStream` — no wasm, no
+external services, no browser. The QR encodes the same `fldVisitorQr` number the
+GProp app embeds, so it scans identically.
 
 Only the configured group (`ALLOWED_CHAT_ID`) is served; everything else is
-ignored. The bot only sees `/commands` and replies to its own prompts (Telegram
-group privacy mode), not your family's normal chatter.
+ignored (keep Telegram group privacy mode on so the bot only sees `/commands`
+and replies to its own prompts).
 
-See [`../docs/API.md`](../docs/API.md) for the GProp API details.
+### Files
+
+- `src/index.js` — Telegram webhook + conversation flow.
+- `src/gprop.js` — GProp web client (login, create, listing, cancel).
+- `src/pass.js` — self-contained visitor-pass PNG renderer.
+- `src/qrcode.js`, `src/font8x8.js` — vendored QR encoder + bitmap font.
+- `src/telegram.js` — Telegram Bot API helpers (incl. PNG upload).
+
+See [`../docs/WEB_API.md`](../docs/WEB_API.md) for the reverse-engineered GProp
+web endpoints. (`../docs/API.md` documents the abandoned mobile-API attempt.)
 
 ## One-time setup
 
