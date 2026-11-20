@@ -69,6 +69,8 @@ async function handleUpdate(update, env) {
   const text = (msg.text || "").trim();
   const cmd = text.replace(/@\w+/, "");
   const isPrivate = chat.type === "private";
+  if (text.startsWith("/")) console.log(`cmd chat=${chat.id} thread=${msg.message_thread_id || ""} ${text.split(/\s/)[0]}`);
+  try { await ensureCommands(env, bot); } catch (e) { console.log("setMyCommands error:", e?.stack || e); }
 
   if (/^\/chatid\b/.test(text)) {
     const topic = msg.is_topic_message && msg.message_thread_id ? `\nTopic id: <code>${msg.message_thread_id}</code>` : "";
@@ -96,7 +98,7 @@ async function handleUpdate(update, env) {
   if (env.ANNOUNCE_CHAT_ID && String(chat.id) === String(env.ANNOUNCE_CHAT_ID)) {
     const inThread = msg.message_thread_id ? { message_thread_id: msg.message_thread_id } : {};
     if (/^\/(pass|visitor)\b/.test(cmd)) return passButtonMessage(bot, chat.id, await botUsername(bot), "t", inThread);
-    if (/^\/help\b/.test(cmd)) return bot.sendMessage(chat.id, HELP_TEXT, inThread);
+    if (/^\/help\b/.test(cmd)) return bot.sendMessage(chat.id, helpText(true), inThread);
     if (/^\/latestnotice\b/.test(cmd)) {
       try { const row = await postLatest(env, bot); if (!row) await bot.sendMessage(chat.id, "No announcements found."); }
       catch (e) { console.log("latestnotice error:", e?.stack || e); }
@@ -107,7 +109,7 @@ async function handleUpdate(update, env) {
   // Group chat: only the designated family group is served; others are ignored.
   if (!isAllowedChat(chat, env)) return;
   if (/^\/(pass|visitor)\b/.test(cmd)) return passButtonMessage(bot, chat.id, await botUsername(bot), "");
-  if (/^\/help\b/.test(cmd)) return bot.sendMessage(chat.id, HELP_TEXT);
+  if (/^\/help\b/.test(cmd)) return bot.sendMessage(chat.id, helpText(false));
 }
 
 // Where a finished pass is posted. "t" = the announcements topic group.
@@ -133,10 +135,40 @@ function passButtonMessage(bot, chatId, uname, destKey, extra = {}) {
     { reply_markup: { inline_keyboard: [[{ text: "➕ Create visitor pass", url: launch }]] }, ...extra });
 }
 
-const HELP_TEXT =
-  "🎟️ <b>GProp Visitor Pass</b>\nSend /pass, then tap <b>Create visitor pass</b> to open the private form.\n" +
-  "• <b>Social visitor</b> — name + vehicle\n• <b>Grab / Lalamove / Foodpanda</b> — just vehicle\n" +
-  "• <b>Other delivery</b> — company + vehicle\nUnit is always RB-034B. Passes are valid for the day. Only resident-group members can create passes.";
+function helpText(isAnnounceGroup) {
+  return "🤖 <b>What I can do</b>\n\n" +
+    "/pass — create a GProp visitor pass (opens a private form; the pass posts back here)\n" +
+    "   • <b>Social visitor</b> — name + vehicle\n" +
+    "   • <b>Grab / Lalamove / Foodpanda</b> — just vehicle\n" +
+    "   • <b>Other delivery</b> — company + vehicle\n" +
+    "   Unit is always RB-034B; passes are valid for the chosen day.\n" +
+    (isAnnounceGroup
+      ? "/latestnotice — post the newest GProp management announcement\n" +
+        "📢 New GProp announcements are posted to the announcements topic automatically (checked every 30 min).\n"
+      : "") +
+    "/chatid — show this chat's id (and topic id)\n" +
+    "/help — this message\n\n" +
+    "Only members of this group can create passes.";
+}
+
+// Register the "/" command menu once (re-run by bumping the version).
+const COMMANDS_VERSION = "v1";
+async function ensureCommands(env, bot) {
+  if ((await env.STATE.get("cmds")) === COMMANDS_VERSION) return;
+  const base = [
+    { command: "pass", description: "Create a GProp visitor pass" },
+    { command: "help", description: "What this bot can do" },
+    { command: "chatid", description: "Show this chat's id" },
+  ];
+  await bot.call("setMyCommands", { commands: base, scope: { type: "all_group_chats" } });
+  if (env.ANNOUNCE_CHAT_ID) {
+    await bot.call("setMyCommands", {
+      commands: [base[0], { command: "latestnotice", description: "Post the newest GProp announcement" }, base[1], base[2]],
+      scope: { type: "chat", chat_id: Number(env.ANNOUNCE_CHAT_ID) },
+    });
+  }
+  await env.STATE.put("cmds", COMMANDS_VERSION);
+}
 
 function isAllowedChat(chat, env) {
   return String(chat?.id) === String(env.ALLOWED_CHAT_ID);
