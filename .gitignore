@@ -1,0 +1,16 @@
+# Secrets & config
+.env
+*.env
+config.local*
+secrets*
+
+# Captured traffic (may contain tokens / personal data)
+*.har
+captures/
+*.apk
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
