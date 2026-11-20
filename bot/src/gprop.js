@@ -205,3 +205,20 @@ export async function cancelVisitor(auth, visitorId) {
   }, BASE + "/visitor");
   return { status: r.status, raw: r.body.slice(0, 300), json: parseJSON(r.body) };
 }
+
+// ---- announcements ---------------------------------------------------------
+export async function listAnnouncements(auth) {
+  const r = await httpGet(auth.jar, "/announcement/announcement_listing", BASE + "/announcement");
+  const j = parseJSON(r.body);
+  return j && Array.isArray(j.aaData) ? j.aaData : [];
+}
+
+// Attachment links on an announcement's details page: [{url, name}].
+export async function announcementAttachments(auth, id) {
+  const r = await httpGet(auth.jar, `/announcement_details/${encodeURIComponent(id)}`, BASE + "/announcement");
+  const out = [];
+  const re = /href="(https:\/\/www\.gpropsystems\.com\/upload\/documents\/announcement\/[^"]+)"[^>]*>(?:\s*<i[^>]*><\/i>)?\s*([^<]*)</g;
+  let m;
+  while ((m = re.exec(r.body))) out.push({ url: m[1], name: m[2].trim() || m[1].split("/").pop() });
+  return out;
+}

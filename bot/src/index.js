@@ -12,6 +12,7 @@ import { tg } from "./telegram.js";
 import * as gprop from "./gprop.js";
 import { renderPassPNG } from "./pass.js";
 import { WEBAPP_HTML } from "./webapp.js";
+import { checkAnnouncements, postLatest } from "./announcements.js";
 
 const APP_PATH = "/app";
 
@@ -37,6 +38,13 @@ export default {
     }
     if (request.method === "GET") return new Response("gprop-visitor-bot: ok", { status: 200 });
     return new Response("not found", { status: 404 });
+  },
+
+  // Cron Trigger: forward new GProp management announcements to the topic.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(checkAnnouncements(env, tg(env))
+      .then((r) => console.log("announcements:", JSON.stringify(r)))
+      .catch((e) => console.log("announcements error:", e?.stack || e)));
   },
 };
 
@@ -71,7 +79,9 @@ async function handleUpdate(update, env) {
   const isPrivate = chat.type === "private";
 
   if (/^\/chatid\b/.test(text)) {
-    return bot.sendMessage(chat.id, `This chat id is <code>${chat.id}</code>`);
+    const topic = msg.is_topic_message && msg.message_thread_id ? `\nTopic id: <code>${msg.message_thread_id}</code>` : "";
+    return bot.sendMessage(chat.id, `This chat id is <code>${chat.id}</code>${topic}`,
+      msg.message_thread_id ? { message_thread_id: msg.message_thread_id } : {});
   }
 
   // Private chat: show the mini-app form button — but only to family-group
@@ -86,6 +96,15 @@ async function handleUpdate(update, env) {
         { reply_markup: { inline_keyboard: [[{ text: "🎟️ Open pass form", web_app: { url: APP_URL } }]] } });
     }
     return;
+  }
+
+  // Announcements group: /latestnotice re-posts the newest notice (for testing).
+  if (env.ANNOUNCE_CHAT_ID && String(chat.id) === String(env.ANNOUNCE_CHAT_ID)) {
+    if (/^\/latestnotice\b/.test(cmd)) {
+      try { const row = await postLatest(env, bot); if (!row) await bot.sendMessage(chat.id, "No announcements found."); }
+      catch (e) { console.log("latestnotice error:", e?.stack || e); }
+    }
+    return; // no pass creation here
   }
 
   // Group chat: only the designated family group is served; others are ignored.

@@ -11,6 +11,10 @@ routes = [
   { pattern = "gprop-bot.potatoportal.dev", custom_domain = true }
 ]
 
+# --- Cron: check GProp announcements every 30 min, post new ones to the topic
+[triggers]
+crons = ["*/30 * * * *"]
+
 # --- State store (KV) ----------------------------------------------------
 # Holds: cached GProp auth token, and per-user conversation state.
 # Create it once with:  wrangler kv namespace create STATE
@@ -30,4 +34,6 @@ GPROP_LOGIN_FIELD = "email"
 #   GPROP_LOGIN_ID            your GProp email or phone
 #   GPROP_PASSWORD            your GProp password
 #   ALLOWED_CHAT_ID           the family group chat id (negative number)
+#   ANNOUNCE_CHAT_ID          group (with Topics) that receives GProp announcements
+#   ANNOUNCE_THREAD_ID        topic id inside that group (from /chatid in the topic)
 #   ALLOWED_USER_IDS          optional, comma-separated user ids to further restrict
