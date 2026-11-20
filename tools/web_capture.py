@@ -16,7 +16,7 @@ Needs only Python 3 stdlib (no pip installs).
 import sys, os, re, json, getpass, urllib.request, urllib.parse, http.cookiejar
 
 BASE = "https://www.gpropsystems.com"
-UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 OUT = os.path.join(os.getcwd(), "gprop_web_capture")
 os.makedirs(OUT, exist_ok=True)
 
