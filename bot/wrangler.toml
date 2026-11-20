@@ -17,7 +17,7 @@ routes = [
 # then paste the returned id below.
 [[kv_namespaces]]
 binding = "STATE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "e9a39ff140e94971a422a8cf5fe93b47"
 
 # --- Non-secret config ---------------------------------------------------
 [vars]
