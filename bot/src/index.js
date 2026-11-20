@@ -1,27 +1,33 @@
-// GProp Visitor Pass — Telegram bot on Cloudflare Workers (WEB-app driven).
+// GProp Visitor Pass — Telegram bot + mini-app on Cloudflare Workers.
 //
-// Family members in one Telegram group create visitor/delivery passes; the bot
-// logs in to the GProp website with Ross's credentials, creates the visitor,
-// and posts back a generated visitor-pass PNG (with the scannable QR).
-//
-// Flow:  /pass -> Social or Delivery
-//   Social   -> visitor name  + vehicle reg
-//   Delivery -> company name   + vehicle reg
-//   -> visit date (default today, confirm) -> pass PNG.
-// Unit is always RB-034B. Only the configured group chat is served.
+// A family member taps "Create visitor pass" in the group, which opens a PRIVATE
+// Telegram mini-app form (/app). They pick the type (Social visitor / Grab /
+// Lalamove / Foodpanda / Other delivery), fill name/company + vehicle, confirm
+// the visit date, and submit. The form POSTs to /app/submit with Telegram
+// initData; the Worker verifies the signature + group membership, logs in to
+// GProp, creates the visitor (unit RB-034B, single-day per GProp's rule), and
+// posts the generated visitor-pass PNG to the family group.
 
-import { tg, keyboard } from "./telegram.js";
+import { tg } from "./telegram.js";
 import * as gprop from "./gprop.js";
 import { renderPassPNG } from "./pass.js";
+import { WEBAPP_HTML } from "./webapp.js";
 
-const STEP = { NAME: "name", VEHICLE: "vehicle", CUSTOMEND: "customend" };
-const STATE_TTL = 1800; // conversation state lives 30 min
-const TZ_OFFSET_MIN = 8 * 60; // Malaysia UTC+8 for "today"
+const APP_PATH = "/app";
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (request.method === "GET") return new Response("gprop-visitor-bot: ok", { status: 200 });
+
+    // Mini-app form
+    if (url.pathname === APP_PATH && request.method === "GET") {
+      return new Response(WEBAPP_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
+    // Mini-app submit
+    if (url.pathname === "/app/submit" && request.method === "POST") {
+      return onAppSubmit(request, env);
+    }
+    // Telegram webhook
     if (request.method === "POST" && url.pathname === `/tg/${env.TELEGRAM_WEBHOOK_SECRET}`) {
       let update;
       try { update = await request.json(); } catch { return new Response("bad json", { status: 400 }); }
@@ -29,253 +35,181 @@ export default {
       catch (e) { console.log("handleUpdate error:", e?.stack || e); }
       return new Response("ok", { status: 200 });
     }
+    if (request.method === "GET") return new Response("gprop-visitor-bot: ok", { status: 200 });
     return new Response("not found", { status: 404 });
   },
 };
 
-// ---------- router ----------
+// ---------- Telegram webhook ----------
+let BOT_USERNAME = null;
+const APP_URL = "https://gprop-bot.potatoportal.dev/app";
+
+async function botUsername(bot) {
+  if (BOT_USERNAME) return BOT_USERNAME;
+  try { const me = await bot.getMe(); BOT_USERNAME = me?.result?.username || null; } catch { /* ignore */ }
+  return BOT_USERNAME;
+}
+
 async function handleUpdate(update, env) {
   const bot = tg(env);
-  if (update.callback_query) return onCallback(update.callback_query, env, bot);
-  if (update.message) return onMessage(update.message, env, bot);
+  const msg = update.message;
+  if (!msg) return;
+  const chat = msg.chat;
+  const text = (msg.text || "").trim();
+  const cmd = text.replace(/@\w+/, "");
+  const isPrivate = chat.type === "private";
+
+  if (/^\/chatid\b/.test(text)) {
+    return bot.sendMessage(chat.id, `This chat id is <code>${chat.id}</code>`);
+  }
+
+  // Private chat: launch the mini-app form directly (web_app inline buttons are
+  // only allowed in private chats). Open to anyone; membership is re-checked on
+  // submit, so non-members can't actually create a pass.
+  if (isPrivate) {
+    if (/^\/(start|pass|visitor)\b/.test(cmd)) {
+      return bot.sendMessage(chat.id,
+        "🎟️ <b>GProp Visitor Pass</b>\nTap below to open the form. The finished pass posts to your family group.",
+        { reply_markup: { inline_keyboard: [[{ text: "🎟️ Open pass form", web_app: { url: APP_URL } }]] } });
+    }
+    return;
+  }
+
+  // Group chat: only the family group is served.
+  if (!isAllowedChat(chat, env)) return;
+  if (/^\/(pass|visitor)\b/.test(cmd)) {
+    const uname = await botUsername(bot);
+    // web_app buttons can't be used in groups, so link to the bot's private
+    // chat (deep link) where the form button is shown.
+    const deepLink = uname ? `https://t.me/${uname}?start=pass` : APP_URL;
+    return bot.sendMessage(chat.id,
+      "🎟️ <b>GProp Visitor Pass</b>\nTap to create a pass — it opens a private form, and the finished pass posts back here.",
+      { reply_markup: { inline_keyboard: [[{ text: "➕ Create visitor pass", url: deepLink }]] } });
+  }
+  if (/^\/help\b/.test(cmd)) {
+    return bot.sendMessage(chat.id,
+      "🎟️ <b>GProp Visitor Pass</b>\nSend /pass, then tap <b>Create visitor pass</b> — it opens a private form in your chat with me.\n" +
+      "• <b>Social visitor</b> — name + vehicle\n• <b>Grab / Lalamove / Foodpanda</b> — just vehicle\n" +
+      "• <b>Other delivery</b> — company + vehicle\nUnit is always RB-034B. Passes are valid for the day.");
+  }
 }
 
 function isAllowedChat(chat, env) {
   return String(chat?.id) === String(env.ALLOWED_CHAT_ID);
 }
 
-async function onMessage(msg, env, bot) {
-  const chat = msg.chat;
-  const text = (msg.text || "").trim();
+// ---------- mini-app submit ----------
+async function onAppSubmit(request, env) {
+  const bot = tg(env);
+  let body;
+  try { body = await request.json(); } catch { return json({ ok: false, error: "bad request" }); }
 
-  if (/^\/chatid\b/.test(text)) {
-    return bot.sendMessage(chat.id, `This chat id is <code>${chat.id}</code>`);
-  }
-  if (!isAllowedChat(chat, env)) return; // silently ignore other chats
+  // Verify the Telegram Web App signature.
+  const user = await verifyInitData(body.initData || "", env.TELEGRAM_BOT_TOKEN);
+  if (!user) return json({ ok: false, error: "Couldn't verify Telegram sign-in. Open the form from the group button." });
 
-  const cmd = text.replace(/@\w+/, "");
-  if (/^\/(pass|start|visitor)\b/.test(cmd)) return startPass(msg, env, bot);
-  if (/^\/cancel\b/.test(cmd)) {
-    await clearState(env, chat.id, msg.from.id);
-    return bot.sendMessage(chat.id, "Cancelled. Send /pass to start again.");
-  }
-  if (/^\/help\b/.test(cmd)) {
-    return bot.sendMessage(chat.id,
-      "🎟️ <b>GProp Visitor Pass</b>\nSend /pass to create a pass.\n" +
-      "• <b>Social visitor</b> — asks name + vehicle reg\n" +
-      "• <b>Delivery</b> — asks company (Grab/Lalamove/etc) + vehicle reg\n" +
-      "Unit is always RB-034B. /cancel to stop.");
-  }
-
-  // Reply to a force_reply prompt (name / company / vehicle / custom end date).
-  if (msg.reply_to_message && text) {
-    const st = await getState(env, chat.id, msg.from.id);
-    if (st && (st.step === STEP.NAME || st.step === STEP.VEHICLE || st.step === STEP.CUSTOMEND)) {
-      return onTextStep(msg, st, env, bot);
+  // Only family-group members may create passes.
+  try {
+    const m = await bot.getChatMember(env.ALLOWED_CHAT_ID, user.id);
+    const status = m?.result?.status;
+    if (!["creator", "administrator", "member", "restricted"].includes(status)) {
+      return json({ ok: false, error: "You need to be in the family group to create a pass." });
     }
-  }
-}
-
-// ---------- flow ----------
-async function startPass(msg, env, bot) {
-  const chatId = msg.chat.id;
-  await setState(env, chatId, msg.from.id, { step: "category", data: {} });
-  return bot.sendMessage(chatId,
-    "🎟️ <b>New visitor pass</b>\nWhat kind of pass?",
-    keyboard([
-      [{ text: "👤 Social visitor", data: "cat:social" }],
-      [{ text: "📦 Delivery (Grab/Lalamove/…)", data: "cat:delivery" }],
-    ]));
-}
-
-async function onCallback(cq, env, bot) {
-  const chatId = cq.message.chat.id;
-  if (!isAllowedChat(cq.message.chat, env)) return bot.answerCallbackQuery(cq.id);
-  const st = await getState(env, chatId, cq.from.id);
-  if (!st) { await bot.answerCallbackQuery(cq.id, { text: "Session expired — send /pass again." }); return; }
-
-  const [kind, value] = (cq.data || "").split(":");
-  await bot.answerCallbackQuery(cq.id);
-
-  if (kind === "cat") {
-    st.data.kind = value; // "social" | "delivery"
-    st.step = STEP.NAME;
-    await setState(env, chatId, cq.from.id, st);
-    const prompt = value === "delivery"
-      ? "📦 Reply with the <b>delivery company</b> (e.g. Grab, Lalamove, Shopee, J&amp;T):"
-      : "👤 Reply with the <b>visitor's name</b>:";
-    return bot.sendMessage(chatId, prompt, { reply_markup: { force_reply: true, selective: true } });
+  } catch (e) {
+    console.log("getChatMember error:", e?.stack || e);
+    return json({ ok: false, error: "Couldn't verify your group membership. Try again." });
   }
 
-  if (kind === "sdate") {
-    st.data.startDate = value;
-    await setState(env, chatId, cq.from.id, st);
-    return promptEndDate(chatId, value, bot);
+  // Map the chosen kind to GProp category/type + the name shown on the pass.
+  const kind = String(body.kind || "");
+  const vehicle = String(body.vehicle || "").trim().toUpperCase();
+  const date = String(body.date || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ ok: false, error: "Invalid date." });
+
+  let categoryId, typeId, passName, categoryLabel;
+  if (kind === "social") {
+    const name = String(body.name || "").trim();
+    if (!name) return json({ ok: false, error: "Visitor name is required." });
+    categoryId = gprop.CAT_SOCIAL; typeId = gprop.TYPE_SOCIAL_VEHICLE; passName = name; categoryLabel = "Social Visitor";
+  } else {
+    // delivery: presets (grab/lalamove/foodpanda) or "other" (company typed)
+    const PRESET = { grab: "Grab", lalamove: "Lalamove", foodpanda: "Foodpanda" };
+    let company;
+    if (PRESET[kind]) company = PRESET[kind];
+    else if (kind === "other") { company = String(body.name || "").trim(); if (!company) return json({ ok: false, error: "Delivery company is required." }); }
+    else return json({ ok: false, error: "Unknown pass type." });
+    categoryId = gprop.CAT_DELIVERY; typeId = gprop.deliveryTypeFor(company); passName = company; categoryLabel = "Delivery Services";
   }
 
-  if (kind === "edate") {
-    if (value === "custom") {
-      st.step = STEP.CUSTOMEND;
-      await setState(env, chatId, cq.from.id, st);
-      return bot.sendMessage(chatId,
-        "📅 Reply with the <b>end date</b> as <code>YYYY-MM-DD</code> (e.g. <code>2026-12-05</code>):",
-        { reply_markup: { force_reply: true, selective: true } });
-    }
-    st.data.endDate = value;
-    await setState(env, chatId, cq.from.id, st);
-    return submitPass(chatId, cq.from.id, st, env, bot);
-  }
-}
-
-async function onTextStep(msg, st, env, bot) {
-  const chatId = msg.chat.id;
-  const val = msg.text.trim();
-
-  if (st.step === STEP.NAME) {
-    st.data.name = val;
-    st.step = STEP.VEHICLE;
-    await setState(env, chatId, msg.from.id, st);
-    return bot.sendMessage(chatId,
-      "🚗 Reply with the <b>vehicle registration number</b> (or <code>-</code> if none):",
-      { reply_markup: { force_reply: true, selective: true } });
-  }
-
-  if (st.step === STEP.VEHICLE) {
-    st.data.vehicle = val === "-" ? "" : val.toUpperCase();
-    await setState(env, chatId, msg.from.id, st);
-    const dates = quickDates(4);
-    return bot.sendMessage(chatId,
-      "📅 <b>Visit date?</b> (defaults to today — tap to confirm)",
-      keyboard(dates.map((d) => [{ text: d.label, data: `sdate:${d.value}` }])));
-  }
-
-  if (st.step === STEP.CUSTOMEND) {
-    const end = val.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(end) || isNaN(Date.parse(end))) {
-      return bot.sendMessage(chatId, "That doesn't look like a date. Reply as <code>YYYY-MM-DD</code>, e.g. <code>2026-12-05</code>.",
-        { reply_markup: { force_reply: true, selective: true } });
-    }
-    if (end < st.data.startDate) {
-      return bot.sendMessage(chatId, `End date can't be before the start date (${escapeHtml(st.data.startDate)}). Reply with a later date.`,
-        { reply_markup: { force_reply: true, selective: true } });
-    }
-    st.data.endDate = end;
-    await setState(env, chatId, msg.from.id, st);
-    return submitPass(chatId, msg.from.id, st, env, bot);
-  }
-}
-
-// Ask for the validity end date: default same day, plus 3-day / 7-day / custom.
-function promptEndDate(chatId, startDate, bot) {
-  const d3 = addDays(startDate, 2);  // 3 calendar days inclusive
-  const d7 = addDays(startDate, 6);  // 7 calendar days inclusive
-  return bot.sendMessage(chatId,
-    "🗓️ <b>Valid until?</b> (defaults to same day)",
-    keyboard([
-      [{ text: `✅ Same day (${startDate})`, data: `edate:${startDate}` }],
-      [{ text: `3 days (→ ${d3})`, data: `edate:${d3}` }],
-      [{ text: `7 days (→ ${d7})`, data: `edate:${d7}` }],
-      [{ text: "✏️ Custom date", data: "edate:custom" }],
-    ]));
-}
-
-async function submitPass(chatId, userId, st, env, bot) {
-  const d = st.data;
-  await clearState(env, chatId, userId);
-  await bot.sendMessage(chatId, "⏳ Creating the pass…");
-
+  // Log in + create (single-day: end = start).
   let auth;
   try { auth = await gprop.login(env); }
-  catch (e) {
-    console.log("login error:", e?.stack || e);
-    return bot.sendMessage(chatId, "❌ Couldn't log in to GProp. Please try again shortly.");
-  }
+  catch (e) { console.log("login error:", e?.stack || e); return json({ ok: false, error: "Couldn't log in to GProp. Try again shortly." }); }
 
-  const isDelivery = d.kind === "delivery";
-  const categoryId = isDelivery ? gprop.CAT_DELIVERY : gprop.CAT_SOCIAL;
-  const typeId = isDelivery ? gprop.deliveryTypeFor(d.name) : gprop.TYPE_SOCIAL_VEHICLE;
-  const categoryLabel = isDelivery ? "Delivery Services" : "Social Visitor";
+  const res = await gprop.createVisitor(auth, { categoryId, typeId, name: passName, vehicle, startDate: date, endDate: date });
+  if (!res.ok) return json({ ok: false, error: `GProp rejected the pass${res.msg ? ` (“${res.msg}”)` : ""}.` });
 
-  const startDate = d.startDate;
-  const endDate = d.endDate || d.startDate;
-  const res = await gprop.createVisitor(auth, {
-    categoryId, typeId, name: d.name, vehicle: d.vehicle,
-    startDate, endDate,
-  });
-  if (!res.ok) {
-    return bot.sendMessage(chatId, `❌ GProp did not accept the pass${res.msg ? ` (“${escapeHtml(res.msg)}”)` : ""}. Please try again.`);
-  }
-
-  // Pull the created row for the QR + confirmed pass data.
   let row = null;
-  try { row = await gprop.getVisitorById(auth, res.insertID); }
-  catch (e) { console.log("listing error:", e?.stack || e); }
-
+  try { row = await gprop.getVisitorById(auth, res.insertID); } catch (e) { console.log("listing error:", e?.stack || e); }
   const qr = row?.fldVisitorQr || "";
-  const typeName = row?.fldVisitorType || (isDelivery ? "Delivery" : "Vehicle");
+
   const passData = {
     property: gprop.PROPERTY_NAME,
     unit: row?.fldUnitNumber || "RB-034B",
-    name: d.name,
-    category: categoryLabel,
-    type: typeName,
-    validFrom: row?.fldStartDate || startDate,
-    validTo: row?.fldEndDate || endDate,
-    vehicle: d.vehicle || "-",
-    date: row?.fldStartDate || startDate,
+    name: passName,
+    date: row?.fldStartDate || date,
+    validFrom: row?.fldStartDate || date,
+    validTo: row?.fldEndDate || date,
+    vehicle: vehicle || "-",
     qr,
   };
-  const validity = passData.validFrom === passData.validTo
-    ? passData.validFrom
-    : `${passData.validFrom} → ${passData.validTo}`;
 
+  const who = user.first_name ? ` (by ${escapeHtml(user.first_name)})` : "";
   const caption =
-    `✅ <b>Visitor pass ready</b>\n` +
-    `${isDelivery ? "Company" : "Name"}: ${escapeHtml(d.name)}\n` +
-    (d.vehicle ? `Vehicle: ${escapeHtml(d.vehicle)}\n` : "") +
-    `Valid: ${escapeHtml(validity)}\n` +
-    `Unit: ${escapeHtml(passData.unit)}` +
+    `🎟️ <b>Visitor pass</b>${who}\n` +
+    `${kind === "social" ? "Name" : "Company"}: ${escapeHtml(passName)}\n` +
+    (vehicle ? `Vehicle: ${escapeHtml(vehicle)}\n` : "") +
+    `Date: ${escapeHtml(passData.date)} · Unit: ${escapeHtml(passData.unit)}` +
     (qr ? `\nPass no: <code>${escapeHtml(qr)}</code>` : "");
 
-  if (!qr) {
-    // Created but QR not found — still confirm so the family isn't left hanging.
-    return bot.sendMessage(chatId, caption + "\n(⚠️ Pass created, but I couldn't read the QR number — check the GProp app.)");
-  }
-
+  // Post the pass to the family group.
   try {
-    const png = await renderPassPNG(passData);
-    return bot.sendPhotoBytes(chatId, png, `pass-${qr}.png`, { caption, parse_mode: "HTML" });
+    if (qr) {
+      const png = await renderPassPNG(passData);
+      await bot.sendPhotoBytes(env.ALLOWED_CHAT_ID, png, `pass-${qr}.png`, { caption, parse_mode: "HTML" });
+    } else {
+      await bot.sendMessage(env.ALLOWED_CHAT_ID, caption + "\n(⚠️ created, but no QR found — check the GProp app.)");
+    }
   } catch (e) {
-    console.log("render error:", e?.stack || e);
-    return bot.sendMessage(chatId, caption + "\n(Pass created; image render failed — the pass number above still works.)");
+    console.log("deliver error:", e?.stack || e);
+    return json({ ok: true, qr, warn: "created but couldn't post to group" });
   }
+  return json({ ok: true, qr });
+}
+
+// ---------- Telegram Web App initData verification ----------
+async function verifyInitData(initData, botToken) {
+  if (!initData || !botToken) return null;
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  if (!hash) return null;
+  params.delete("hash");
+  const pairs = [...params.entries()].map(([k, v]) => `${k}=${v}`).sort();
+  const dcs = pairs.join("\n");
+  const enc = new TextEncoder();
+  // secret_key = HMAC_SHA256(key="WebAppData", data=bot_token)
+  const kWeb = await crypto.subtle.importKey("raw", enc.encode("WebAppData"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const secret = await crypto.subtle.sign("HMAC", kWeb, enc.encode(botToken));
+  const kSecret = await crypto.subtle.importKey("raw", secret, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", kSecret, enc.encode(dcs));
+  const hex = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  if (hex !== hash) return null;
+  // freshness (24h)
+  const authDate = Number(params.get("auth_date") || 0);
+  if (authDate && Date.now() / 1000 - authDate > 86400) return null;
+  try { return JSON.parse(params.get("user") || "{}"); } catch { return null; }
 }
 
 // ---------- helpers ----------
-function quickDates(n) {
-  const out = [];
-  const now = Date.now();
-  for (let i = 0; i < n; i++) {
-    const dt = new Date(now + (TZ_OFFSET_MIN * 60000) + i * 86400000);
-    const value = dt.toISOString().slice(0, 10); // YYYY-MM-DD in UTC+8
-    const label = i === 0 ? `✅ Today (${value})` : i === 1 ? `Tomorrow (${value})` : value;
-    out.push({ label, value });
-  }
-  return out;
-}
-
-function addDays(yyyymmdd, days) {
-  const dt = new Date(yyyymmdd + "T00:00:00Z");
-  dt.setUTCDate(dt.getUTCDate() + days);
-  return dt.toISOString().slice(0, 10);
-}
-
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-}
-
-// ---------- conversation state (KV) ----------
-const stKey = (chatId, userId) => `conv:${chatId}:${userId}`;
-async function getState(env, chatId, userId) { return env.STATE.get(stKey(chatId, userId), "json"); }
-async function setState(env, chatId, userId, st) { return env.STATE.put(stKey(chatId, userId), JSON.stringify(st), { expirationTtl: STATE_TTL }); }
-async function clearState(env, chatId, userId) { return env.STATE.delete(stKey(chatId, userId)); }
+function json(obj) { return new Response(JSON.stringify(obj), { headers: { "Content-Type": "application/json" } }); }
+function escapeHtml(s) { return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }

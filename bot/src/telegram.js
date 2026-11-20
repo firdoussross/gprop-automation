@@ -15,6 +15,8 @@ export function tg(env) {
       call("sendMessage", { chat_id, text, parse_mode: "HTML", ...extra }),
     answerCallbackQuery: (id, extra = {}) =>
       call("answerCallbackQuery", { callback_query_id: id, ...extra }),
+    getChatMember: (chat_id, user_id) => call("getChatMember", { chat_id, user_id }),
+    getMe: () => call("getMe", {}),
     editMessageText: (chat_id, message_id, text, extra = {}) =>
       call("editMessageText", { chat_id, message_id, text, parse_mode: "HTML", ...extra }),
     sendPhoto: (chat_id, photo, extra = {}) =>
