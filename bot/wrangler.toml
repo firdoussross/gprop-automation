@@ -1,0 +1,39 @@
+name = "gprop-visitor-bot"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+# Workers free plan is enough for family use (100k requests/day, 1k KV writes/day).
+
+# --- Routing -------------------------------------------------------------
+# The bot is served on your potatoportal.dev zone. Telegram calls the webhook
+# over HTTPS at:  https://gprop-bot.potatoportal.dev/tg/<TELEGRAM_WEBHOOK_SECRET>
+# Requires potatoportal.dev to be an active zone on this Cloudflare account.
+routes = [
+  { pattern = "gprop-bot.potatoportal.dev", custom_domain = true }
+]
+
+# --- State store (KV) ----------------------------------------------------
+# Holds: cached GProp auth token, and per-user conversation state.
+# Create it once with:  wrangler kv namespace create STATE
+# then paste the returned id below.
+[[kv_namespaces]]
+binding = "STATE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# --- Non-secret config ---------------------------------------------------
+[vars]
+# Which GProp login field to send: "email" or "contact" (phone). Flip as needed.
+GPROP_LOGIN_FIELD = "email"
+# App identity headers the GProp backend expects (safe to tweak).
+GPROP_PLATFORM = "android"
+GPROP_APP_VERSION = "1.0.0"
+GPROP_DEVICE_OS = "android"
+# Set to "1" to echo raw GProp responses into Telegram while confirming the API.
+DEBUG_API = "1"
+
+# --- Secrets (set via `wrangler secret put <NAME>`, never commit) ---------
+#   TELEGRAM_BOT_TOKEN        from @BotFather
+#   TELEGRAM_WEBHOOK_SECRET   random string you choose (used in the webhook path)
+#   GPROP_LOGIN_ID            your GProp email or phone
+#   GPROP_PASSWORD            your GProp password
+#   ALLOWED_CHAT_ID           the family group chat id (negative number)
+#   ALLOWED_USER_IDS          optional, comma-separated user ids to further restrict

@@ -1,0 +1,16 @@
+{
+  "name": "gprop-visitor-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram bot (Cloudflare Worker) to create GProp visitor/delivery passes for the family group",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "set-webhook": "node scripts/set-webhook.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "3.90.0"
+  }
+}
