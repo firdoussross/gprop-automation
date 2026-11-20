@@ -43,11 +43,22 @@ export default {
 // ---------- Telegram webhook ----------
 let BOT_USERNAME = null;
 const APP_URL = "https://gprop-bot.potatoportal.dev/app";
+// Short name of the BotFather direct-link Mini App (/newapp). The group button
+// opens it in one tap; falls back to the deep link if not yet registered.
+const APP_SHORTNAME = "pass";
 
 async function botUsername(bot) {
   if (BOT_USERNAME) return BOT_USERNAME;
   try { const me = await bot.getMe(); BOT_USERNAME = me?.result?.username || null; } catch { /* ignore */ }
   return BOT_USERNAME;
+}
+
+// Is this user a member of the family group?
+async function isGroupMember(bot, env, userId) {
+  try {
+    const m = await bot.getChatMember(env.ALLOWED_CHAT_ID, userId);
+    return ["creator", "administrator", "member", "restricted"].includes(m?.result?.status);
+  } catch (e) { console.log("getChatMember error:", e?.stack || e); return false; }
 }
 
 async function handleUpdate(update, env) {
@@ -63,11 +74,13 @@ async function handleUpdate(update, env) {
     return bot.sendMessage(chat.id, `This chat id is <code>${chat.id}</code>`);
   }
 
-  // Private chat: launch the mini-app form directly (web_app inline buttons are
-  // only allowed in private chats). Open to anyone; membership is re-checked on
-  // submit, so non-members can't actually create a pass.
+  // Private chat: show the mini-app form button — but only to family-group
+  // members, so random people who find the bot can't invoke it.
   if (isPrivate) {
     if (/^\/(start|pass|visitor)\b/.test(cmd)) {
+      if (!(await isGroupMember(bot, env, msg.from.id))) {
+        return bot.sendMessage(chat.id, "Sorry — this bot is only for the designated resident group. You don't have access.");
+      }
       return bot.sendMessage(chat.id,
         "🎟️ <b>GProp Visitor Pass</b>\nTap below to open the form. The finished pass posts to your family group.",
         { reply_markup: { inline_keyboard: [[{ text: "🎟️ Open pass form", web_app: { url: APP_URL } }]] } });
@@ -75,22 +88,22 @@ async function handleUpdate(update, env) {
     return;
   }
 
-  // Group chat: only the family group is served.
+  // Group chat: only the designated family group is served; others are ignored.
   if (!isAllowedChat(chat, env)) return;
   if (/^\/(pass|visitor)\b/.test(cmd)) {
     const uname = await botUsername(bot);
-    // web_app buttons can't be used in groups, so link to the bot's private
-    // chat (deep link) where the form button is shown.
-    const deepLink = uname ? `https://t.me/${uname}?start=pass` : APP_URL;
+    // One-tap: open the BotFather direct-link Mini App. Membership is still
+    // enforced on submit, so only group members can actually create a pass.
+    const launch = uname ? `https://t.me/${uname}/${APP_SHORTNAME}` : APP_URL;
     return bot.sendMessage(chat.id,
-      "🎟️ <b>GProp Visitor Pass</b>\nTap to create a pass — it opens a private form, and the finished pass posts back here.",
-      { reply_markup: { inline_keyboard: [[{ text: "➕ Create visitor pass", url: deepLink }]] } });
+      "🎟️ <b>GProp Visitor Pass</b>\nTap to create a pass — opens a private form; the finished pass posts back here.",
+      { reply_markup: { inline_keyboard: [[{ text: "➕ Create visitor pass", url: launch }]] } });
   }
   if (/^\/help\b/.test(cmd)) {
     return bot.sendMessage(chat.id,
-      "🎟️ <b>GProp Visitor Pass</b>\nSend /pass, then tap <b>Create visitor pass</b> — it opens a private form in your chat with me.\n" +
+      "🎟️ <b>GProp Visitor Pass</b>\nSend /pass, then tap <b>Create visitor pass</b> to open the private form.\n" +
       "• <b>Social visitor</b> — name + vehicle\n• <b>Grab / Lalamove / Foodpanda</b> — just vehicle\n" +
-      "• <b>Other delivery</b> — company + vehicle\nUnit is always RB-034B. Passes are valid for the day.");
+      "• <b>Other delivery</b> — company + vehicle\nUnit is always RB-034B. Passes are valid for the day. Only resident-group members can create passes.");
   }
 }
 
