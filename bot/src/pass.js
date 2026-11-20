@@ -277,8 +277,8 @@ export async function renderPassPNG(data) {
     ["Validity", `${data.validFrom || data.date} - ${data.validTo || data.validFrom}`],
   ];
   cy += 8 + rows.length * 62;   // each row: label + value
-  cy += 20;                     // divider gap
-  cy += 70;                     // logo
+  cy += 24;                     // divider gap
+  cy += 112;                    // logo
   cy += 20;                     // bottom padding
   const cardBottom = cy;
   const H = cardBottom + 28;
@@ -317,9 +317,9 @@ export async function renderPassPNG(data) {
   }
   p += 6;
   fillRect(c, innerX, p, innerW, 1.4, LINE);
-  p += 24;
+  p += 30;
   // logo
-  drawLogo(c, centerX, p, 54);
+  drawLogo(c, centerX, p, 92);
 
   return encodePNG(c);
 }
