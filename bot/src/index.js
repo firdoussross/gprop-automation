@@ -66,13 +66,19 @@ async function handleUpdate(update, env) {
   const msg = update.message;
   if (!msg) return;
   const chat = msg.chat;
-  const text = (msg.text || "").trim();
+  let text = (msg.text || "").trim();
+  // "@cimponi_bot pass" -> "/pass" (mention-style commands).
+  const mm = /^@(\w+)\s+\/?([a-z]+)\b/i.exec(text);
+  if (mm) {
+    const uname = await botUsername(bot);
+    if (uname && mm[1].toLowerCase() === uname.toLowerCase()) text = `/${mm[2].toLowerCase()}`;
+  }
   const cmd = text.replace(/@\w+/, "");
   const isPrivate = chat.type === "private";
   if (text.startsWith("/")) console.log(`cmd chat=${chat.id} thread=${msg.message_thread_id || ""} ${text.split(/\s/)[0]}`);
   try { await ensureCommands(env, bot); } catch (e) { console.log("setMyCommands error:", e?.stack || e); }
 
-  if (/^\/chatid\b/.test(text)) {
+  if (/^\/chatid\b/.test(cmd)) {
     const topic = msg.is_topic_message && msg.message_thread_id ? `\nTopic id: <code>${msg.message_thread_id}</code>` : "";
     return bot.sendMessage(chat.id, `This chat id is <code>${chat.id}</code>${topic}`,
       msg.message_thread_id ? { message_thread_id: msg.message_thread_id } : {});
@@ -146,24 +152,23 @@ function helpText(isAnnounceGroup) {
       ? "/latestnotice — post the newest GProp management announcement\n" +
         "📢 New GProp announcements are posted to the announcements topic automatically (checked every 30 min).\n"
       : "") +
-    "/chatid — show this chat's id (and topic id)\n" +
     "/help — this message\n\n" +
+    "You can also write <b>@cimponi_bot pass</b>" + (isAnnounceGroup ? " or <b>@cimponi_bot latestnotice</b>" : "") + ".\n\n" +
     "Only members of this group can create passes.";
 }
 
 // Register the "/" command menu once (re-run by bumping the version).
-const COMMANDS_VERSION = "v1";
+const COMMANDS_VERSION = "v2";
 async function ensureCommands(env, bot) {
   if ((await env.STATE.get("cmds")) === COMMANDS_VERSION) return;
   const base = [
     { command: "pass", description: "Create a GProp visitor pass" },
     { command: "help", description: "What this bot can do" },
-    { command: "chatid", description: "Show this chat's id" },
   ];
   await bot.call("setMyCommands", { commands: base, scope: { type: "all_group_chats" } });
   if (env.ANNOUNCE_CHAT_ID) {
     await bot.call("setMyCommands", {
-      commands: [base[0], { command: "latestnotice", description: "Post the newest GProp announcement" }, base[1], base[2]],
+      commands: [base[0], { command: "latestnotice", description: "Post the newest GProp announcement" }, base[1]],
       scope: { type: "chat", chat_id: Number(env.ANNOUNCE_CHAT_ID) },
     });
   }
