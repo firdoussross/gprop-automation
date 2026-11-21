@@ -153,7 +153,6 @@ function helpText(isAnnounceGroup) {
         "📢 New GProp announcements are posted to the announcements topic automatically (checked every 30 min).\n"
       : "") +
     "/help — this message\n\n" +
-    "You can also write <b>@cimponi_bot pass</b>" + (isAnnounceGroup ? " or <b>@cimponi_bot latestnotice</b>" : "") + ".\n\n" +
     "Only members of this group can create passes.";
 }
 
