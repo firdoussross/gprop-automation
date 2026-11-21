@@ -160,7 +160,7 @@ function helpText(isAnnounceGroup) {
 }
 
 // Register the "/" command menu once (re-run by bumping the version).
-const COMMANDS_VERSION = "v3";
+const COMMANDS_VERSION = "v4";
 async function ensureCommands(env, bot) {
   if ((await env.STATE.get("cmds")) === COMMANDS_VERSION) return;
   const commands = [
@@ -168,7 +168,13 @@ async function ensureCommands(env, bot) {
     { command: "latestnotice", description: "Post the newest GProp announcement" },
     { command: "help", description: "What this bot can do" },
   ];
+  // Overwrite every scope (incl. any list set earlier in BotFather).
+  await bot.call("setMyCommands", { commands, scope: { type: "default" } });
   await bot.call("setMyCommands", { commands, scope: { type: "all_group_chats" } });
+  await bot.call("setMyCommands", { commands: [{ command: "start", description: "Open the visitor pass form" }], scope: { type: "all_private_chats" } });
+  for (const id of [env.ALLOWED_CHAT_ID, env.ANNOUNCE_CHAT_ID].filter(Boolean)) {
+    await bot.call("deleteMyCommands", { scope: { type: "chat_administrators", chat_id: Number(id) } });
+  }
   if (env.ANNOUNCE_CHAT_ID) {
     await bot.call("setMyCommands", { commands, scope: { type: "chat", chat_id: Number(env.ANNOUNCE_CHAT_ID) } });
   }
