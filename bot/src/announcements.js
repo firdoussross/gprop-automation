@@ -32,7 +32,7 @@ export async function checkAnnouncements(env, bot, { dryRun = false } = {}) {
   const fresh = rows.filter((r) => !seen.has(String(r.fldAnnouncementId))).reverse(); // oldest first
   let posted = 0;
   for (const row of fresh) {
-    if (!dryRun) await postAnnouncement(env, bot, auth, row);
+    if (!dryRun) await postAnnouncement(bot, auth, row, { chatId: env.ANNOUNCE_CHAT_ID, threadId: env.ANNOUNCE_THREAD_ID });
     seen.add(String(row.fldAnnouncementId));
     posted++;
   }
@@ -40,16 +40,17 @@ export async function checkAnnouncements(env, bot, { dryRun = false } = {}) {
   return { posted };
 }
 
-// Post the newest announcement on demand (used by /latestnotice to test).
-export async function postLatest(env, bot) {
+// Post the newest announcement on demand (/latestnotice) into the asking chat.
+export async function postLatest(env, bot, dest) {
   const auth = await gprop.login(env);
   const row = (await gprop.listAnnouncements(auth)).filter(isPublished)[0];
-  if (row) await postAnnouncement(env, bot, auth, row);
+  if (row) await postAnnouncement(bot, auth, row, dest);
   return row;
 }
 
-async function postAnnouncement(env, bot, auth, row) {
-  const target = { message_thread_id: env.ANNOUNCE_THREAD_ID ? Number(env.ANNOUNCE_THREAD_ID) : undefined };
+async function postAnnouncement(bot, auth, row, dest) {
+  const chatId = dest.chatId;
+  const target = dest.threadId ? { message_thread_id: Number(dest.threadId) } : {};
   const id = row.fldAnnouncementId;
   const link = `${BASE}/announcement_details/${id}`;
   const head = `📢 <b>${esc(clean(row.fldTitle))}</b>\n🗓 ${esc(row.fldPublishedDate || "")}\n\n`;
@@ -57,16 +58,16 @@ async function postAnnouncement(env, bot, auth, row) {
   let body = htmlToTelegram(row.fldDescription || "");
   const room = 4096 - head.length - tail.length - 10;
   if (body.length > room) body = truncateSafe(body, room) + "…";
-  await bot.sendMessage(env.ANNOUNCE_CHAT_ID, head + body + tail, { ...target, disable_web_page_preview: true });
+  await bot.sendMessage(chatId, head + body + tail, { ...target, disable_web_page_preview: true });
 
   // Attachments (PDF / images) from the details page.
   let docs = [];
   try { docs = await gprop.announcementAttachments(auth, id); } catch (e) { console.log("attachments error:", e?.stack || e); }
   for (const d of docs.slice(0, 3)) {
-    const r = await bot.call("sendDocument", { chat_id: env.ANNOUNCE_CHAT_ID, document: d.url, caption: d.name.slice(0, 1000), ...target });
+    const r = await bot.call("sendDocument", { chat_id: chatId, document: d.url, caption: d.name.slice(0, 1000), ...target });
     if (!r?.ok) {
       console.log("sendDocument failed:", JSON.stringify(r));
-      await bot.sendMessage(env.ANNOUNCE_CHAT_ID, `📎 <a href="${d.url}">${esc(d.name)}</a>`, target);
+      await bot.sendMessage(chatId, `📎 <a href="${d.url}">${esc(d.name)}</a>`, target);
     }
   }
 }

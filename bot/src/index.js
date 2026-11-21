@@ -105,10 +105,7 @@ async function handleUpdate(update, env) {
     const inThread = msg.message_thread_id ? { message_thread_id: msg.message_thread_id } : {};
     if (/^\/(pass|visitor)\b/.test(cmd)) return passButtonMessage(bot, chat.id, await botUsername(bot), "t", inThread);
     if (/^\/help\b/.test(cmd)) return bot.sendMessage(chat.id, helpText(true), inThread);
-    if (/^\/latestnotice\b/.test(cmd)) {
-      try { const row = await postLatest(env, bot); if (!row) await bot.sendMessage(chat.id, "No announcements found."); }
-      catch (e) { console.log("latestnotice error:", e?.stack || e); }
-    }
+    if (/^\/latestnotice\b/.test(cmd)) return latestNotice(env, bot, chat.id, msg.message_thread_id);
     return;
   }
 
@@ -116,6 +113,7 @@ async function handleUpdate(update, env) {
   if (!isAllowedChat(chat, env)) return;
   if (/^\/(pass|visitor)\b/.test(cmd)) return passButtonMessage(bot, chat.id, await botUsername(bot), "");
   if (/^\/help\b/.test(cmd)) return bot.sendMessage(chat.id, helpText(false));
+  if (/^\/latestnotice\b/.test(cmd)) return latestNotice(env, bot, chat.id, msg.message_thread_id);
 }
 
 // Where a finished pass is posted. "t" = the announcements topic group.
@@ -141,6 +139,13 @@ function passButtonMessage(bot, chatId, uname, destKey, extra = {}) {
     { reply_markup: { inline_keyboard: [[{ text: "➕ Create visitor pass", url: launch }]] }, ...extra });
 }
 
+async function latestNotice(env, bot, chatId, threadId) {
+  try {
+    const row = await postLatest(env, bot, { chatId, threadId });
+    if (!row) await bot.sendMessage(chatId, "No announcements found.", threadId ? { message_thread_id: threadId } : {});
+  } catch (e) { console.log("latestnotice error:", e?.stack || e); }
+}
+
 function helpText(isAnnounceGroup) {
   return "🤖 <b>What I can do</b>\n\n" +
     "/pass — create a GProp visitor pass (opens a private form; the pass posts back here)\n" +
@@ -148,28 +153,24 @@ function helpText(isAnnounceGroup) {
     "   • <b>Grab / Lalamove / Foodpanda</b> — just vehicle\n" +
     "   • <b>Other delivery</b> — company + vehicle\n" +
     "   Unit is always RB-034B; passes are valid for the chosen day.\n" +
-    (isAnnounceGroup
-      ? "/latestnotice — post the newest GProp management announcement\n" +
-        "📢 New GProp announcements are posted to the announcements topic automatically (checked every 30 min).\n"
-      : "") +
+    "/latestnotice — post the newest GProp management announcement\n" +
+    (isAnnounceGroup ? "📢 New GProp announcements are posted to the announcements topic automatically (checked every 30 min).\n" : "") +
     "/help — this message\n\n" +
     "Only members of this group can create passes.";
 }
 
 // Register the "/" command menu once (re-run by bumping the version).
-const COMMANDS_VERSION = "v2";
+const COMMANDS_VERSION = "v3";
 async function ensureCommands(env, bot) {
   if ((await env.STATE.get("cmds")) === COMMANDS_VERSION) return;
-  const base = [
+  const commands = [
     { command: "pass", description: "Create a GProp visitor pass" },
+    { command: "latestnotice", description: "Post the newest GProp announcement" },
     { command: "help", description: "What this bot can do" },
   ];
-  await bot.call("setMyCommands", { commands: base, scope: { type: "all_group_chats" } });
+  await bot.call("setMyCommands", { commands, scope: { type: "all_group_chats" } });
   if (env.ANNOUNCE_CHAT_ID) {
-    await bot.call("setMyCommands", {
-      commands: [base[0], { command: "latestnotice", description: "Post the newest GProp announcement" }, base[1]],
-      scope: { type: "chat", chat_id: Number(env.ANNOUNCE_CHAT_ID) },
-    });
+    await bot.call("setMyCommands", { commands, scope: { type: "chat", chat_id: Number(env.ANNOUNCE_CHAT_ID) } });
   }
   await env.STATE.put("cmds", COMMANDS_VERSION);
 }
